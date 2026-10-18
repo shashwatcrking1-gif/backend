@@ -4,7 +4,8 @@ import com.civicshield.domain.AppUser; import io.jsonwebtoken.Jwts; import io.js
  private final SecretKey key; private final Duration expiration;
  public JwtService(@Value("${civicshield.jwt.secret}") String secret,@Value("${civicshield.jwt.expiration}") Duration expiration){
   byte[] secretBytes=secret.getBytes(StandardCharsets.UTF_8);
-  if(secretBytes.length<32)throw new IllegalArgumentException("JWT_SECRET must be configured with at least 32 UTF-8 bytes");
+  if(secretBytes.length==0)throw new IllegalStateException("JWT_SECRET is empty; set this Render environment variable to a random value of at least 32 UTF-8 bytes");
+  if(secretBytes.length<32)throw new IllegalArgumentException("JWT_SECRET is too short; provide at least 32 UTF-8 bytes");
   this.key=Keys.hmacShaKeyFor(secretBytes);
   this.expiration=expiration;
  }
