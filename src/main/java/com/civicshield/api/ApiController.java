@@ -7,6 +7,16 @@ import jakarta.validation.Valid;import org.springframework.data.domain.*;import 
  private AppUser actor(Authentication a){return users.findByEmailIgnoreCase(a.getName()).orElseThrow(()->new IllegalStateException("Authenticated user no longer exists"));}
  private Incident incident(long id){return incidents.findById(id).orElseThrow(()->new IllegalArgumentException("Incident not found: "+id));}
  private Map<String,Double> parse(String s){try{return json.readValue(s,new TypeReference<>(){});}catch(Exception e){throw new IllegalStateException("Stored analysis is invalid");}}
+ private Map<String,Object> parseObject(String s){try{return json.readValue(s,new TypeReference<>(){});}catch(Exception e){throw new IllegalStateException("Stored simulation inputs are invalid");}}
+ private Map<String,Double> parseFactors(Object value){
+  if(!(value instanceof Map<?,?> values))throw new IllegalStateException("Stored simulation localFactors are invalid");
+  Map<String,Double> factors=new LinkedHashMap<>();
+  for(var entry:values.entrySet()){
+   if(!(entry.getKey() instanceof String key)||!(entry.getValue() instanceof Number number))throw new IllegalStateException("Stored simulation localFactors are invalid");
+   factors.put(key,number.doubleValue());
+  }
+  return factors;
+ }
  private String stringify(Object o){try{return json.writeValueAsString(o);}catch(Exception e){throw new IllegalStateException("Could not encode data");}}
  private IncidentView view(Incident i){return new IncidentView(i.getId(),i.getTitle(),i.getType(),i.getLocation(),i.getDescription(),i.getSeedRisk(),i.getStatus(),i.getCreatedBy().getId(),i.getCreatedAt(),i.getUpdatedAt());}
  private RiskView view(RiskAnalysis r){return new RiskView(r.getId(),r.getIncident().getId(),r.getScore(),r.getSeverity(),parse(r.getNodeProbabilities()),parse(r.getLocalFactors()),r.getAnalyzedAt());}
@@ -25,10 +35,14 @@ import jakarta.validation.Valid;import org.springframework.data.domain.*;import 
  @PatchMapping("/alerts/{id}/status") @PreAuthorize("hasAnyRole('ADMIN','ANALYST','RESPONDER')") public AlertView alertStatus(@PathVariable long id,@Valid @RequestBody AlertStatusRequest req,Authentication a){Alert x=alerts.findById(id).orElseThrow(()->new IllegalArgumentException("Alert not found: "+id));x.setStatus(req.status());audit.save(new AuditLog(actor(a),"STATUS","ALERT",id+"",req.status()));return new AlertView(x.getId(),x.getIncident().getId(),x.getSeverity(),x.getMessage(),x.getStatus(),x.getCreatedAt());}
  @GetMapping("/recommendations") public Page<RecommendationView> recs(@RequestParam(defaultValue="0")int page,@RequestParam(defaultValue="20")int size){return recommendations.findAll(PageRequest.of(page,Math.min(size,100),Sort.by("createdAt").descending())).map(x->new RecommendationView(x.getId(),x.getIncident().getId(),x.getText(),x.getStatus(),x.getCreatedAt()));}
  @PostMapping("/simulations") @PreAuthorize("hasAnyRole('ADMIN','ANALYST','RESPONDER')") public ResponseEntity<SimulationView> simulate(@Valid @RequestBody SimulationRequest req,Authentication a){AppUser u=actor(a);Incident i=incident(req.incidentId());double seed=req.seed()==null?i.getSeedRisk():req.seed();Map<String,Double> f=req.localFactors()==null?Map.of():req.localFactors();var x=engine.analyze(seed,f);Simulation s=simulations.save(new Simulation(i,u,stringify(Map.of("seed",seed,"localFactors",f)),x.score(),x.severity(),stringify(x.nodes())));audit.save(new AuditLog(u,"SIMULATE","SIMULATION",s.getId()+"","incident="+i.getId()));return ResponseEntity.status(201).body(simView(s));}
- private SimulationView simView(Simulation s){return new SimulationView(s.getId(),s.getIncident().getId(),s.getScore(),s.getSeverity(),parse(s.getNodeProbabilities()),parse(s.getInputs()).get("localFactors") instanceof Map<?,?> raw?cast(raw):Map.of(),s.getCreatedAt());}
- @SuppressWarnings("unchecked")private Map<String,Double> cast(Map<?,?> m){return (Map<String,Double>)m;}
+ private SimulationView simView(Simulation s){Map<String,Object> inputs=parseObject(s.getInputs());return new SimulationView(s.getId(),s.getIncident().getId(),s.getScore(),s.getSeverity(),parse(s.getNodeProbabilities()),parseFactors(inputs.get("localFactors")),s.getCreatedAt());}
  @GetMapping("/simulations") public Page<SimulationView> simList(@RequestParam(defaultValue="0")int page,@RequestParam(defaultValue="20")int size){return simulations.findAll(PageRequest.of(page,Math.min(size,100),Sort.by("createdAt").descending())).map(this::simView);}
  @GetMapping("/simulations/{id}") public SimulationView sim(@PathVariable long id){return simView(simulations.findById(id).orElseThrow(()->new IllegalArgumentException("Simulation not found: "+id)));}
- @GetMapping("/dashboard/summary") public Summary summary(){long total=incidents.count(),open=incidents.count((r,q,cb)->cb.equal(r.get("status"),"OPEN")),active=alerts.count((r,q,cb)->cb.equal(r.get("status"),"ACTIVE"));return new Summary(total,open,active,simulations.count());}
+ @GetMapping("/dashboard/summary") public Summary summary(){
+  Specification<Incident> openIncidents=(root,query,cb)->cb.equal(root.get("status"),"OPEN");
+  Specification<Alert> activeAlerts=(root,query,cb)->cb.equal(root.get("status"),"ACTIVE");
+  long total=incidents.count(),open=incidents.count(openIncidents),active=alerts.count(activeAlerts);
+  return new Summary(total,open,active,simulations.count());
+ }
  @GetMapping("/reports/summary") public Map<String,Object> report(){return Map.of("generatedAt",java.time.Instant.now(),"summary",summary(),"riskAnalyses",risks.count(),"recommendations",recommendations.count());}
 }
